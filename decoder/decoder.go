@@ -28,15 +28,16 @@ type Set struct {
 func NewSet() *Set {
 	return &Set{
 		decoders: map[string]Decoder{
-			"cgroup":     &CGroup{},
-			"ksym":       &KSym{},
-			"majorminor": &MajorMinor{},
-			"regexp":     &Regexp{},
-			"static_map": &StaticMap{},
-			"string":     &String{},
-			"dname":      &Dname{},
-			"uint":       &UInt{},
-			"inet_ip":    &InetIP{},
+			"cgroup":                      &CGroup{},
+			"ksym":                        &KSym{},
+			"majorminor":                  &MajorMinor{},
+			"regexp":                      &Regexp{},
+			"static_map":                  &StaticMap{},
+			"string":                      &String{},
+			"dname":                       &Dname{},
+			"uint":                        &UInt{},
+			"inet_ip":                     &InetIP{},
+			"docker_containerid_from_pid": &DockerContainerIDFromPID{},
 		},
 	}
 }

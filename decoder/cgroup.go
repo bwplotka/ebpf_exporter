@@ -32,8 +32,6 @@ func (c *CGroup) Decode(in []byte, _ config.Decoder) ([]byte, error) {
 		return []byte(path), nil
 	}
 
-	fmt.Println("not found ", string(in))
-
 	if err := c.refreshCache(); err != nil {
 		log.Printf("Error refreshing cgroup id to path map: %s", err)
 		if path, ok := c.cache[uint64(cgroupID)]; ok {
