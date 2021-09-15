@@ -10,17 +10,17 @@ import (
 func TestCgroupDecoder(t *testing.T) {
 	cases := []struct {
 		in    []byte
-		cache map[uint64][]byte
+		cache map[uint64]string
 		out   []byte
 	}{
 		{
 			in:    []byte("6"),
-			cache: map[uint64][]byte{uint64(6): []byte("cgroup_six")},
+			cache: map[uint64]string{uint64(6): "cgroup_six"},
 			out:   []byte("cgroup_six"),
 		},
 		{
 			in:    []byte("6"),
-			cache: map[uint64][]byte{uint64(7): []byte("cgroup_seven")},
+			cache: map[uint64]string{uint64(7): "cgroup_seven"},
 			out:   []byte("unknown_cgroup_id:6"),
 		},
 	}

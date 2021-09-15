@@ -33,11 +33,19 @@ type PerfEvent struct {
 	SampleFrequency int    `yaml:"sample_frequency"`
 }
 
+const (
+	FailOnDuplicates Aggregation = ""
+	SumAggregation   Aggregation = "sum"
+)
+
 // Metrics is a collection of metrics attached to a program
 type Metrics struct {
-	Counters   []Counter   `yaml:"counters"`
-	Histograms []Histogram `yaml:"histograms"`
+	Counters    []Counter   `yaml:"counters"`
+	Histograms  []Histogram `yaml:"histograms"`
+	Aggregation Aggregation `yaml:"aggregation"`
 }
+
+type Aggregation string
 
 // Counter is a metric defining prometheus counter
 type Counter struct {

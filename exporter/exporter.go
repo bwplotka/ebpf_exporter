@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/cespare/xxhash/v2"
 	"github.com/cloudflare/ebpf_exporter/config"
 	"github.com/cloudflare/ebpf_exporter/decoder"
 	"github.com/iovisor/gobpf/bcc"
@@ -162,12 +163,23 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 // collectCounters sends all known counters to prometheus
 func (e *Exporter) collectCounters(ch chan<- prometheus.Metric) {
 	for _, program := range e.config.Programs {
+
+		var aggrFn func(a, b metricValue) metricValue
+		switch program.Metrics.Aggregation {
+		case config.SumAggregation:
+			aggrFn = func(a, b metricValue) metricValue {
+				a.raw = append(a.raw, b.raw...)
+				a.value += b.value
+				return a
+			}
+		}
+
 		for _, counter := range program.Metrics.Counters {
 			if len(counter.PerfMap) != 0 {
 				continue
 			}
 
-			tableValues, err := e.tableValues(e.modules[program.Name], counter.Table, counter.Labels)
+			tableValues, err := e.tableValues(e.modules[program.Name], counter.Table, counter.Labels, aggrFn)
 			if err != nil {
 				log.Printf("Error getting table %q values for metric %q of program %q: %s", counter.Table, counter.Name, program.Name, err)
 				continue
@@ -185,12 +197,23 @@ func (e *Exporter) collectCounters(ch chan<- prometheus.Metric) {
 // collectHistograms sends all known historams to prometheus
 func (e *Exporter) collectHistograms(ch chan<- prometheus.Metric) {
 	for _, program := range e.config.Programs {
+
+		var aggrFn func(a, b metricValue) metricValue
+		switch program.Metrics.Aggregation {
+		case config.SumAggregation:
+			aggrFn = func(a, b metricValue) metricValue {
+				a.raw = append(a.raw, b.raw...)
+				a.value += b.value
+				return a
+			}
+		}
+
 		for _, histogram := range program.Metrics.Histograms {
 			skip := false
 
 			histograms := map[string]histogramWithLabels{}
 
-			tableValues, err := e.tableValues(e.modules[program.Name], histogram.Table, histogram.Labels)
+			tableValues, err := e.tableValues(e.modules[program.Name], histogram.Table, histogram.Labels, aggrFn)
 			if err != nil {
 				log.Printf("Error getting table %q values for metric %q of program %q: %s", histogram.Table, histogram.Name, program.Name, err)
 				continue
@@ -252,8 +275,9 @@ func (e *Exporter) collectHistograms(ch chan<- prometheus.Metric) {
 }
 
 // tableValues returns values in the requested table to be used in metircs
-func (e *Exporter) tableValues(module *bcc.Module, tableName string, labels []config.Label) ([]metricValue, error) {
-	values := []metricValue{}
+func (e *Exporter) tableValues(module *bcc.Module, tableName string, labels []config.Label, aggrFn func(a, b metricValue) metricValue) ([]metricValue, error) {
+	// Decoding might provide duplicate metric values which is not accepted for metrics. Maintain hash map of metrics.
+	values := map[uint64]metricValue{}
 
 	table := bcc.NewTable(module.TableId(tableName), module)
 	iter := table.Iter()
@@ -266,7 +290,7 @@ func (e *Exporter) tableValues(module *bcc.Module, tableName string, labels []co
 		}
 
 		mv := metricValue{
-			raw:    raw,
+			raw:    []string{raw},
 			labels: make([]string, len(labels)),
 		}
 
@@ -275,16 +299,31 @@ func (e *Exporter) tableValues(module *bcc.Module, tableName string, labels []co
 			if err == decoder.ErrSkipLabelSet {
 				continue
 			}
-
 			return nil, err
 		}
 
 		mv.value = float64(bcc.GetHostByteOrder().Uint64(iter.Leaf()))
 
-		values = append(values, mv)
+		h := xxhash.New()
+		for _, s := range mv.labels {
+			_, _ = h.WriteString(s)
+		}
+		hash := h.Sum64()
+		if m, ok := values[hash]; ok {
+			if aggrFn == nil {
+				return nil, fmt.Errorf("decoder decoded metrics labels into duplicates; %v and %v; provide aggregation in metric configuration or fix decoding", m, mv)
+			}
+			values[hash] = aggrFn(m, mv)
+			continue
+		}
+		values[hash] = mv
 	}
 
-	return values, nil
+	ret := make([]metricValue, 0, len(values))
+	for _, v := range values {
+		ret = append(ret, v)
+	}
+	return ret, nil
 }
 
 func (e Exporter) exportTables() (map[string]map[string][]metricValue, error) {
@@ -314,8 +353,18 @@ func (e Exporter) exportTables() (map[string]map[string][]metricValue, error) {
 			}
 		}
 
+		var aggrFn func(a, b metricValue) metricValue
+		switch program.Metrics.Aggregation {
+		case config.SumAggregation:
+			aggrFn = func(a, b metricValue) metricValue {
+				a.raw = append(a.raw, b.raw...)
+				a.value += b.value
+				return a
+			}
+		}
+
 		for name, labels := range metricTables {
-			metricValues, err := e.tableValues(e.modules[program.Name], name, labels)
+			metricValues, err := e.tableValues(e.modules[program.Name], name, labels, aggrFn)
 			if err != nil {
 				return nil, fmt.Errorf("error getting values for table %q of program %q: %s", name, program.Name, err)
 			}
@@ -352,7 +401,7 @@ func (e *Exporter) TablesHandler(w http.ResponseWriter, r *http.Request) {
 
 			buf = append(buf, "```\n"...)
 			for _, row := range table {
-				buf = append(buf, fmt.Sprintf("%s (%v) -> %f\n", row.raw, row.labels, row.value)...)
+				buf = append(buf, fmt.Sprintf("%v (%v) -> %f\n", row.raw, row.labels, row.value)...)
 			}
 			buf = append(buf, "```\n\n"...)
 		}
@@ -365,8 +414,9 @@ func (e *Exporter) TablesHandler(w http.ResponseWriter, r *http.Request) {
 
 // metricValue is a row in a kernel map
 type metricValue struct {
-	// raw is a raw key value provided by kernel
-	raw string
+	// raw is a raw keys values provided by kernel.
+	// It's slice since we could have more metrics aggregated into one.
+	raw []string
 	// labels are decoded from the raw key
 	labels []string
 	// value is the kernel map value
